@@ -25,11 +25,13 @@ def get_avg_discounted_value(next_dones, next_mask, next_rewards, next_value_pre
     return avg_discounted_value
 
 
+# class DefaultModel(nn.Model):
+#     def __init__(self)
 
-class LinearTDsLearner:
-    def __init__(self, feature_size, device, feature_preproc, learn_rate=0.001):
-        self.value_function = nn.Linear(feature_size, 1, bias=True).to(device)
-        self.optim = torch.optim.Adam(self.value_function.parameters(), lr=learn_rate)
+class LinearTDLearner:
+    def __init__(self, feature_size, device, feature_preproc, learn_rate=0.0001):
+        self.value_function = nn.Linear(feature_size, 1, bias=False).to(device)
+        self.optim = torch.optim.SGD(self.value_function.parameters(), lr=learn_rate)
         self.feature_size = feature_size
         self.device = device
         self.feature_preproc = feature_preproc
@@ -43,27 +45,29 @@ class LinearTDsLearner:
         tot_td_err = 0
         num_steps = 0
         order = torch.randperm(num_samples, device=self.device)
-        for i in range(0, num_samples-minibatch_size+1, minibatch_size):
+        for i in range(0, num_samples, minibatch_size):
+            maxi = min(num_samples, i+minibatch_size)
+            curbatch_size = maxi - i
             with torch.no_grad():
-                idxs = order[i:i+minibatch_size]
+                idxs = order[i:maxi]
                 all_idx_block = idxs.view(-1,1) + torch.arange(0, td_lambda+1, device=self.device).view(1,-1)
                 all_idxs = all_idx_block.flatten()
                 next_idxs = all_idx_block[:,1:].flatten()
                 all_features = feature_sequence[all_idxs]
                 processed_features = self.feature_preproc(all_features)
 
-            value_preds = self.value_function.forward(processed_features).view(minibatch_size, -1)
+            value_preds = self.value_function.forward(processed_features).view(curbatch_size, -1)
 
             with torch.no_grad():
                 next_value_preds = value_preds[:,1:]
-                next_dones = dones[next_idxs].view(minibatch_size,-1).float()
-                next_mask = mask[next_idxs].view(minibatch_size,-1).float()
-                next_rewards =  rewards[next_idxs].view(minibatch_size,-1)
+                next_dones = dones[next_idxs].view(curbatch_size,-1).float()
+                next_mask = mask[next_idxs].view(curbatch_size,-1).float()
+                next_rewards =  rewards[next_idxs].view(curbatch_size,-1)
                 avg_discounted_value = get_avg_discounted_value(next_dones, next_mask, next_rewards, next_value_preds, gamma)
 
             cur_values = value_preds[:,0]
             self.optim.zero_grad()
-            td_err = torch.mean((avg_discounted_value.detach() - cur_values)**2)
+            td_err = torch.sum((avg_discounted_value.detach() - cur_values)**2)/minibatch_size
             td_err.backward()
             self.optim.step()
             tot_td_err += float(td_err.detach().numpy())
@@ -92,19 +96,30 @@ class LinearTDsLearner:
         masks = masks.cpu().detach().numpy().tolist()
         for rew, done, mask in zip(rewards, dones, masks):
             # TODO: This does not implement mask logic!!!
-            if done:
-                value = 0
             value += rew
             actual_values.append(value)
             value *= gamma
+            if done:
+                value = 0
         actual_values.reverse()
         return torch.tensor(actual_values)
 
     def evaluate(self, feature_sequence, minibatch_size, dones, masks, rewards, gamma):
         actual_values = self._get_actual_values(dones, masks, rewards, gamma)
         pred_values = self._predict_values(feature_sequence, minibatch_size)
-
-        return torch.mean(torch.abs(actual_values - pred_values))
+        obs1 = feature_sequence[:55,1].detach().numpy()
+        obs2 = feature_sequence[:55,0].detach().numpy()
+        pred_values_n = pred_values.detach().numpy()
+        actual_values_n = actual_values.detach().numpy()
+        print("iterdata")
+        print("\n".join("\t".join([str(e) for e in el]) for el in zip(pred_values_n, actual_values_n, obs1, obs2)))
+        # print(list(feature_sequence[:55,1].detach().numpy()))
+        # print(list(feature_sequence[:55,0].detach().numpy()))
+        # print(list(actual_values.detach().numpy()))
+        # print(list(pred_values.detach().numpy()))
+        # print(actual_values)
+        # print(pred_values)
+        return torch.mean(torch.abs(actual_values[1:] - pred_values[1:]))
 
 
 
